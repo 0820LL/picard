@@ -40,14 +40,29 @@ import htsjdk.samtools.util.IOUtil;
 import htsjdk.samtools.util.Log;
 import htsjdk.variant.variantcontext.writer.Options;
 import htsjdk.variant.variantcontext.writer.VariantContextWriterBuilder;
+import org.broadinstitute.barclay.argparser.Argument;
+import org.broadinstitute.barclay.argparser.ArgumentCollection;
+import org.broadinstitute.barclay.argparser.CommandLineArgumentParser;
+import org.broadinstitute.barclay.argparser.CommandLineException;
+import org.broadinstitute.barclay.argparser.CommandLineParser;
+import org.broadinstitute.barclay.argparser.CommandLineParserOptions;
+import org.broadinstitute.barclay.argparser.LegacyCommandLineArgumentParser;
+import org.broadinstitute.barclay.argparser.SpecialArgumentsCollection;
+import picard.cmdline.argumentcollections.OptionalReferenceArgumentCollection;
+import picard.cmdline.argumentcollections.ReferenceArgumentCollection;
+import picard.cmdline.argumentcollections.RequiredReferenceArgumentCollection;
+import picard.util.PropertyUtils;
 
 import java.io.File;
 import java.net.InetAddress;
 import java.text.DecimalFormat;
+import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Properties;
 
 /**
  * Abstract class to facilitate writing command-line programs.
@@ -67,51 +82,63 @@ import java.util.Map;
  * 4. Implement the following static method in the concrete class:
  *
  *     public static void main(String[] argv) {
-        new MyConcreteClass().instanceMain(argv);
-    }
-
-
+ *       new MyConcreteClass().instanceMain(argv);
+ *   }
  */
 public abstract class CommandLineProgram {
-    @Option(common=true, optional=true)
+    // Picard CmdLine properties file resource path, placed at this path by the gradle build script
+    private static String PICARD_CMDLINE_PROPERTIES_FILE = "picard/picardCmdLine.properties";
+    private static String PROPERTY_USE_LEGACY_PARSER = "picard.useLegacyParser";
+    private static String PROPERTY_CONVERT_LEGACY_COMMAND_LINE = "picard.convertCommandLine";
+    private static Boolean useLegacyParser;
+
+    @Argument(common=true, optional=true)
     public List<File> TMP_DIR = new ArrayList<File>();
 
-    @Option(doc = "Control verbosity of logging.", common=true)
+    @Argument(doc = "Control verbosity of logging.", common=true)
     public Log.LogLevel VERBOSITY = Log.LogLevel.INFO;
 
-    @Option(doc = "Whether to suppress job-summary info on System.err.", common=true)
+    @Argument(doc = "Whether to suppress job-summary info on System.err.", common=true)
     public Boolean QUIET = false;
 
-    @Option(doc = "Validation stringency for all SAM files read by this program.  Setting stringency to SILENT " +
+    @Argument(doc = "Validation stringency for all SAM files read by this program.  Setting stringency to SILENT " +
             "can improve performance when processing a BAM file in which variable-length data (read, qualities, tags) " +
             "do not otherwise need to be decoded.", common=true)
     public ValidationStringency VALIDATION_STRINGENCY = ValidationStringency.DEFAULT_STRINGENCY;
 
-    @Option(doc = "Compression level for all compressed files created (e.g. BAM and GELI).", common=true)
+    @Argument(doc = "Compression level for all compressed files created (e.g. BAM and GELI).", common=true)
     public int COMPRESSION_LEVEL = Defaults.COMPRESSION_LEVEL;
 
-    @Option(doc = "When writing SAM files that need to be sorted, this will specify the number of records stored in RAM before spilling to disk. Increasing this number reduces the number of file handles needed to sort a SAM file, and increases the amount of RAM needed.", optional=true, common=true)
+    @Argument(doc = "When writing SAM files that need to be sorted, this will specify the number of records stored in RAM before spilling to disk. Increasing this number reduces the number of file handles needed to sort a SAM file, and increases the amount of RAM needed.", optional=true, common=true)
     public Integer MAX_RECORDS_IN_RAM = SAMFileWriterImpl.getDefaultMaxRecordsInRam();
 
-    @Option(doc = "Whether to create a BAM index when writing a coordinate-sorted BAM file.", common=true)
+    @Argument(doc = "Whether to create a BAM index when writing a coordinate-sorted BAM file.", common=true)
     public Boolean CREATE_INDEX = Defaults.CREATE_INDEX;
 
-    @Option(doc="Whether to create an MD5 digest for any BAM or FASTQ files created.  ", common=true)
+    @Argument(doc="Whether to create an MD5 digest for any BAM or FASTQ files created.  ", common=true)
     public boolean CREATE_MD5_FILE = Defaults.CREATE_MD5;
 
-    @Option(shortName = StandardOptionDefinitions.REFERENCE_SHORT_NAME, doc = "Reference sequence file.", common = true, optional = true, overridable = true)
+    @ArgumentCollection
+    public ReferenceArgumentCollection referenceSequence = getReferenceArgumentCollection();
+
     public File REFERENCE_SEQUENCE = Defaults.REFERENCE_FASTA;
 
-    @Option(doc="Google Genomics API client_secrets.json file path.", common = true)
+    @Argument(doc="Google Genomics API client_secrets.json file path.", common = true)
     public String GA4GH_CLIENT_SECRETS="client_secrets.json";
 
-    @Option(shortName = "use_jdk_deflater", doc = "Use the JDK Deflater instead of the Intel Deflater for writing compressed output", common = true)
+    @ArgumentCollection(doc="Special Arguments that have meaning to the argument parsing system.  " +
+                "It is unlikely these will ever need to be accessed by the command line program")
+    public Object specialArgumentsCollection = useLegacyParser(getClass()) ?
+            new Object() : // legacy parser does not require these
+            new SpecialArgumentsCollection();
+
+    @Argument(shortName = "use_jdk_deflater", doc = "Use the JDK Deflater instead of the Intel Deflater for writing compressed output", common = true)
     public Boolean USE_JDK_DEFLATER = false;
 
-    @Option(shortName = "use_jdk_inflater", doc = "Use the JDK Inflater instead of the Intel Inflater for reading compressed input", common = true)
+    @Argument(shortName = "use_jdk_inflater", doc = "Use the JDK Inflater instead of the Intel Inflater for reading compressed input", common = true)
     public Boolean USE_JDK_INFLATER = false;
-    
-    private final String standardUsagePreamble = CommandLineParser.getStandardUsagePreamble(getClass());
+
+    private static final String[] PACKAGES_WITH_WEB_DOCUMENTATION = {"picard"};
 
     static {
       // Register custom reader factory for reading data from Google Genomics 
@@ -148,12 +175,25 @@ public abstract class CommandLineProgram {
     */
     protected abstract int doWork();
 
+    protected boolean requiresReference() { return false; }
+
+    protected ReferenceArgumentCollection getReferenceArgumentCollection() {
+        return requiresReference() ?
+                new RequiredReferenceArgumentCollection() :
+                new OptionalReferenceArgumentCollection();
+    }
+
     public void instanceMainWithExit(final String[] argv) {
         System.exit(instanceMain(argv));
     }
 
     public int instanceMain(final String[] argv) {
-        if (!parseArgs(argv)) {
+        String actualArgs[] = argv;
+
+        if (System.getProperty(PROPERTY_CONVERT_LEGACY_COMMAND_LINE, "false").equals("true")) {
+            actualArgs = CommandLineSyntaxTranslater.translatePicardStyleToPosixStyle(argv);
+        }
+        if (!parseArgs(actualArgs)) {
             return 1;
         }
 
@@ -217,7 +257,7 @@ public abstract class CommandLineProgram {
                     System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"),
                     System.getProperty("java.vm.name"), System.getProperty("java.runtime.version"),
                     usingIntelDeflater ? "Intel" : "Jdk", usingIntelInflater ? "Intel" : "Jdk",
-                    commandLineParser.getVersion());
+                    getCommandLineParser().getVersion());
                 System.err.println(msg);
             }
             catch (Exception e) { /* Unpossible! */ }
@@ -235,7 +275,7 @@ public abstract class CommandLineProgram {
                     final String elapsedString  = new DecimalFormat("#,##0.00").format(elapsedMinutes);
                     System.err.println("[" + endDate + "] " + getClass().getName() + " done. Elapsed time: " + elapsedString + " minutes.");
                     System.err.println("Runtime.totalMemory()=" + Runtime.getRuntime().totalMemory());
-                    if (ret != 0 && CommandLineParser.hasWebDocumentation(this.getClass())) System.err.println(CommandLineParser.getFaqLink());
+                    if (ret != 0 && hasWebDocumentation(this.getClass())) System.err.println(getFaqLink());
                 }
             }
             catch (Throwable e) {
@@ -253,21 +293,6 @@ public abstract class CommandLineProgram {
     * to be written to the appropriate place.
     */
     protected String[] customCommandLineValidation() {
-        final List<String> ret = new ArrayList<String>();
-        for (final Object childOptionsObject : getNestedOptions().values()) {
-            if (childOptionsObject instanceof CommandLineProgram) {
-                final CommandLineProgram childClp = (CommandLineProgram)childOptionsObject;
-                final String[] childErrors = childClp.customCommandLineValidation();
-                if (childErrors != null) {
-                    for (final String error: childErrors) {
-                        ret.add(error);
-                    }
-                }
-            }
-        }
-        if (!ret.isEmpty()) {
-            ret.toArray(new String[ret.size()]);
-        }
         return null;
     }
 
@@ -277,18 +302,30 @@ public abstract class CommandLineProgram {
     */
     protected boolean parseArgs(final String[] argv) {
 
-        commandLineParser = new CommandLineParser(this);
-        final boolean ret = commandLineParser.parseOptions(System.err, argv);
+        commandLineParser = getCommandLineParser();
+
+        boolean ret = false;
+        try {
+            ret = commandLineParser.parseArguments(System.err, argv);
+        } catch (CommandLineException e) {
+            // Barclay command line parser throws on parsing/argument errors
+            System.err.println(e.getMessage());
+            System.err.println(commandLineParser.usage(false,false));
+            ret = false;
+        }
+
         commandLine = commandLineParser.getCommandLine();
         if (!ret) {
             return false;
         }
+        REFERENCE_SEQUENCE = referenceSequence.getReferenceFile();
+
         final String[] customErrorMessages = customCommandLineValidation();
         if (customErrorMessages != null) {
             for (final String msg : customErrorMessages) {
                 System.err.println(msg);
             }
-            commandLineParser.usage(System.err, false);
+            System.err.print(commandLineParser.usage(false, false));
             return false;
         }
         return true;
@@ -305,13 +342,48 @@ public abstract class CommandLineProgram {
     }
 
     public String getStandardUsagePreamble() {
-        return standardUsagePreamble;
+        return getCommandLineParser().getStandardUsagePreamble(getClass());
     }
 
+    /**
+     * @return Return the command line parser to be used.
+     */
     public CommandLineParser getCommandLineParser() {
+        if (commandLineParser == null) {
+            commandLineParser = useLegacyParser(getClass()) ?
+                        new LegacyCommandLineArgumentParser(this) :
+                        new CommandLineArgumentParser(this,
+                            Collections.EMPTY_LIST,
+                            new HashSet<>(Arrays.asList(CommandLineParserOptions.APPEND_TO_COLLECTIONS)));
+        }
         return commandLineParser;
     }
 
+    /**
+     * Return true if the Picard command line parser should be used in place of the Barclay command line parser,
+     * otherwise, false.
+     *
+     * The Barclay parser is enabled by opt-in only, via the presence of a (true-valued) boolean property
+     * "picard.useLegacyParser", either as a System property, or property in a file called "picard.properties".
+     * System property value takes precedence.
+     *
+     * @return true if the legacy parser should be used
+     */
+    public static boolean useLegacyParser(final Class<?> clazz) {
+        String legacyPropertyValue = null;
+        if (useLegacyParser == null) {
+            legacyPropertyValue = System.getProperty(PROPERTY_USE_LEGACY_PARSER);
+            if (null == legacyPropertyValue){
+                Properties props = PropertyUtils.loadPropertiesFile(PICARD_CMDLINE_PROPERTIES_FILE, clazz);
+                if (props != null) {
+                    legacyPropertyValue = props.getProperty(PROPERTY_USE_LEGACY_PARSER);
+                }
+            }
+            // remember the value so we only have to load the properties file once
+            useLegacyParser = legacyPropertyValue == null ? true : Boolean.parseBoolean(legacyPropertyValue);
+        }
+        return useLegacyParser;
+    }
 
     /**
      * @return Version stored in the manifest of the jarfile.
@@ -334,20 +406,38 @@ public abstract class CommandLineProgram {
     }
 
     /**
-     * @return Map of nested options, where the key is the prefix to be used when specifying Options inside of a nested
-     * options object, and the value is the nested options object itself.  Default implementation is to return a
-     * map of all the fields annotated with @NestedOptions, with key being the field name.
+     * A typical command line program will call this to get the beginning of the usage message,
+     * and then typically append a description of the program, like this:
+     *
+     * public String USAGE = getStandardUsagePreamble(getClass()) + "Frobnicate the freebozle."
      */
-    public Map<String, Object> getNestedOptions() {
-        return CommandLineParser.getNestedOptions(this);
+    public static String getStandardUsagePreamble(final Class<?> mainClass) {
+        return "USAGE: " + mainClass.getSimpleName() +" [options]\n\n" +
+                (hasWebDocumentation(mainClass) ?
+                        "Documentation: http://broadinstitute.github.io/picard/command-line-overview.html" +
+                                mainClass.getSimpleName() + "\n\n" :
+                        "");
     }
 
     /**
-     * @return Map of nested options, where the key is the prefix to be used when specifying Options inside of a nested
-     * options object, and the value is the nested options object itself, for the purpose of generating help.
-     * Default implementation is to return the same map as getNestedOptions().
+     * Determine if a class has wbe documentation based on its package name
+     *
+     * @param clazz
+     * @return true if the class has web documentation
      */
-    public Map<String, Object> getNestedOptionsForHelp() {
-        return getNestedOptions();
+    public static boolean hasWebDocumentation(final Class<?> clazz){
+        for (final String pkg: PACKAGES_WITH_WEB_DOCUMENTATION) {
+            if (clazz.getPackage().getName().startsWith(pkg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @return the link to a FAQ
+     */
+    public static String getFaqLink() {
+        return "To get help, see http://broadinstitute.github.io/picard/index.html#GettingHelp";
     }
 }
