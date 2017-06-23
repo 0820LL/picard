@@ -60,7 +60,7 @@ dependencies {
     }
     compile 'com.google.guava:guava:15.0'
     compile 'com.github.samtools:htsjdk:' + htsjdkVersion
-    compile 'org.broadinstitute:barclay:1.0.0-26-ga9a3f67-SNAPSHOT'
+    compile 'org.broadinstitute:barclay:1.1.0'
 
     // javadoc utilities; compile/test only to prevent redistribution of sdk jars
     compileOnly(javadocJDKFiles)
@@ -89,14 +89,45 @@ group = 'com.github.broadinstitute'
 
 defaultTasks 'all'
 
-task all(dependsOn: ['jar', 'distZip', 'javadoc', 'shadowJar', 'barclayJar', 'currentJar'])
+task all(dependsOn: ['jar', 'distZip', 'javadoc', 'shadowJar', 'barclayShadowJar', 'currentJar'])
 
-jar {
+// Source file names for the picard command line properties file. We select and include only one of
+// these two files in each jar, renamed to "picardCmdLine.properties", depending on which parser we
+// want enabled.
+final String legacySourcePropertyFile = 'legacyParserProperties.properties'
+final String barclaySourcePropertyFile = 'barclayParserProperties.properties'
+
+// Target name/location for the picard command line properties file; one of the above source
+// files will be included at this path/location for runtime access
+final String picardTargetPropertiesPath = 'picard'
+final String picardTargetPropertyFile = 'picardCmdLine.properties'
+
+sourceSets {
+    // no need to include these in the jar files; the correct one is selected by the build to control Barclay
+    main {
+        resources {
+            exclude ('properties.templates/**')
+        }
+    }
+}
+
+tasks.withType(Jar){
     manifest {
         attributes 'Main-Class': 'picard.cmdline.PicardCommandLine',
                 'Implementation-Title': 'Picard',
                 'Implementation-Vendor': 'Broad Institute',
                 'Implementation-Version': version
+    }
+}
+
+jar {
+    from('src/main/resources/properties.templates') {
+        // for the default jar, we want the properties file that enables the picard parser
+        include legacySourcePropertyFile
+        into picardTargetPropertiesPath
+        rename { String fileName ->
+            fileName.replace(legacySourcePropertyFile, picardTargetPropertyFile)
+        }
     }
 }
 
@@ -106,8 +137,6 @@ tasks.withType(Javadoc) {
 }
 
 javadoc {
-    // This is a hack to disable the java 8 default javadoc lint until we fix the html formatting
-    // We only want to do this for the javadoc task, not gatkDoc
     options.addStringOption('Xdoclint:none', '-quiet')
 }
 
@@ -146,48 +175,48 @@ task currentJar(type: Copy){
     rename { string -> "picard.jar"}
 }
 
-// Target resource path and file name for the picard command line properties resource
-final String picardCmdLinePropertiesPath = 'picard'
-final String picardCmdLinePropertiesFileName = 'picardCmdLine.properties'
-
 shadowJar {
     finalizedBy currentJar
     from('src/main/resources/properties.templates') {
         // for the default jar, we want the properties file that enables the picard parser
-        include 'legacyParserProperties.properties'
-        into picardCmdLinePropertiesPath
-        rename { string -> picardCmdLinePropertiesFileName }
+        include legacySourcePropertyFile
+        into picardTargetPropertiesPath
+        rename { String fileName ->
+            fileName.replace(legacySourcePropertyFile, picardTargetPropertyFile)
+        }
     }
-    exclude('src/main/resources/properties.templates/**')
 }
 
-// Create picardBarclay.jar, which is identical to picard.jar, but contains a .properties
+// Create picardBarclay.jar, which is a identical to picard.jar, but contains a .properties
 // file that tells Picard to use the Barclay command line parser instead of the Picard
-//  command line parser.
+// command line parser.
 //
-task barclayJar(type: com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)  {
+task barclayShadowJar(type: com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)  {
     configurations = [project.configurations.runtime]
     from project.sourceSets.main.output
-    manifest {
-        inheritFrom project.tasks.jar.manifest
-    }
     from('src/main/resources/properties.templates') {
-        // for the barclay jar, we want the properties file that enables the barclay parser
-        include 'barclayParserProperties.properties'
-        into picardCmdLinePropertiesPath
-        rename { string -> picardCmdLinePropertiesFileName }
+        // for the default jar, we want the properties file that enables the picard parser
+        include barclaySourcePropertyFile
+        into picardTargetPropertiesPath
+        rename { String fileName ->
+            fileName.replace(barclaySourcePropertyFile, picardTargetPropertyFile)
+        }
     }
-    exclude('META-INF/INDEX.LIST', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA')
-    exclude('src/main/resources/properties.templates/**')
     archiveName 'picardBarclay.jar'
 }
 
+// Run the tests using the legacy parser only. Assumes that test code is written using
+// legacy command line parser syntax.
+task legacyTest(type: Test)
+
+// Run the tests using the Barclay command line parser (useLegacyParser=false), which requires
+// conversion of test command lines from Picard-style command line syntax to Barclay-style syntax.
 task barclayTest(type: Test) {
-    // Run all the tests using the command line converted and Barclay CLP
     systemProperty 'picard.convertCommandLine', 'true'
     systemProperty 'picard.useLegacyParser', 'false'
 }
 
+// Run tests using both the legacy and barclay command line parsers.
 test {
     dependsOn barclayTest
 }
@@ -262,7 +291,6 @@ task sourcesJar(type: Jar) {
  */
 artifacts {
     archives jar
-    archives barclayJar
     archives javadocJar
     archives sourcesJar
 }

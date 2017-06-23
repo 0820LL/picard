@@ -147,7 +147,7 @@ public class LiftoverVcf extends CommandLineProgram {
     private long failedLiftover = 0, failedAlleleCheck = 0;
 
     @Override
-    protected ReferenceArgumentCollection getReferenceArgumentCollection() {
+    protected ReferenceArgumentCollection makeReferenceArgumentCollection() {
         return new ReferenceArgumentCollection() {
             @Argument(shortName = StandardOptionDefinitions.REFERENCE_SHORT_NAME, common=false,
                     doc = "The reference sequence (fasta) for the TARGET genome build.  The fasta file must have an " +

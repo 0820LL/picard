@@ -97,7 +97,7 @@ public class ScatterIntervalsByNs extends CommandLineProgram {
     // return a custom argument collection since this tool uses a (required) argument name
     // of "REFERENCE", not "REFERENCE_SEQUENCE"
     @Override
-    protected ReferenceArgumentCollection getReferenceArgumentCollection() {
+    protected ReferenceArgumentCollection makeReferenceArgumentCollection() {
         return new ScatterIntervalsByNReferenceArgumentCollection();
     }
 

@@ -36,6 +36,7 @@ import org.broadinstitute.barclay.argparser.Argument;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import picard.cmdline.CommandLineProgram;
 import picard.cmdline.StandardOptionDefinitions;
+import picard.cmdline.argumentcollections.ReferenceArgumentCollection;
 import picard.cmdline.programgroups.SamOrBam;
 
 import java.io.File;
@@ -85,7 +86,7 @@ public class DownsampleSam extends CommandLineProgram {
     @Argument(shortName="S", doc="The downsampling strategy to use. See usage for discussion.")
     public Strategy STRATEGY = Strategy.ConstantMemory;
 
-    @Argument(shortName = "D", doc = "Random seed to use if deterministic behavior is desired.  " +
+    @Argument(shortName = "R", doc = "Random seed to use if deterministic behavior is desired.  " +
             "Setting to null will cause multiple invocations to produce different results.")
     public Integer RANDOM_SEED = 1;
 
@@ -145,4 +146,19 @@ public class DownsampleSam extends CommandLineProgram {
 
         return 0;
     }
+
+    @Override
+    protected ReferenceArgumentCollection makeReferenceArgumentCollection() {
+        // Override to allow "R" to be hijacked for "RANDOM_SEED"
+        return new ReferenceArgumentCollection() {
+            @Argument(doc = "The reference sequence file.", common=false)
+            public File REFERENCE_SEQUENCE;
+
+            @Override
+            public File getReferenceFile() {
+                return REFERENCE_SEQUENCE;
+            }
+        };
+    }
+
 }
